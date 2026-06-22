@@ -2,10 +2,9 @@
   #?(:cljs (:require-macros [replicant.hiccup-headers])))
 
 (defn ^:no-doc make-key
-  "The reuse key for a keyed node: a [tag user-key] tuple, except under squint
-  where set/map membership uses reference (not value) equality for composite
-  values - so a primitive string is used for value-based identity. The tag is
-  length-prefixed so the tag/key boundary is unambiguous for any contents."
+  "Reuse key for a keyed node. A [tag k] tuple, except under squint where JS
+  Set/Map use reference equality for composite keys, so a length-prefixed
+  string is used for value identity."
   [tag k]
   #?(:squint (str (.-length tag) ":" tag k)
      :default [tag k]))

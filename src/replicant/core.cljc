@@ -1000,9 +1000,9 @@
                              ;; hooks for
                              (remove (let [planned (set (mapv (fn [[_ _ node]] node) hooks-to-call))]
                                        #(contains? planned %))))]
-    (when (seq unmounted-nodes)
+    (when unmounted-nodes
       ;; If we found any of these, we'll forget about them for the next render
-      (vswap! unmount-hooks #(apply dissoc % unmounted-nodes)))
+      (vswap! unmount-hooks (fn [h] (apply dissoc h unmounted-nodes))))
     (into hooks-to-call
           ;; ...and we'll call include the hooks to be called now
           (vals (select-keys potential-unmounts unmounted-nodes)))))
