@@ -213,9 +213,12 @@
         (vswap! state assoc-in [el :rendering?] true)
         (let [{:keys [renderer current unmounts unmount-hooks]} (get @state el)
               aliases (or aliases (alias/get-registered-aliases))
-              hiccup (if alias-data
-                       (env/with-dev-key hiccup [aliases alias-data])
-                       (env/with-dev-key hiccup aliases))
+              ;; with-dev-key is a clj compile-time macro that squint cannot
+              ;; expand, so the dev-key injection is skipped under squint
+              hiccup #?(:squint hiccup
+                        :default (if alias-data
+                                   (env/with-dev-key hiccup [aliases alias-data])
+                                   (env/with-dev-key hiccup aliases)))
               {:keys [vdom]} (r/reconcile renderer el hiccup current {:unmounts unmounts
                                                                       :unmount-hooks unmount-hooks
                                                                       :aliases aliases

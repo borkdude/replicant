@@ -227,8 +227,8 @@
 (defn ^:no-doc proper-seq?
   "Like clojure.core/seq?. In squint vectors and strings are seq?, so narrow to
   genuine sequences or marked child seqs. A vector whose head is not a tag
-  (keyword or fn) is a sequence of nodes, not a hiccup node, so it is treated as
-  a seq. This catches user-built seqs such as (rest some-vector), which squint
+  (keyword) is a sequence of nodes, not a hiccup node, so it is treated as a
+  seq. This catches user-built seqs such as (rest some-vector), which squint
   returns as a vector."
   [x]
   #?(:squint (and x
@@ -236,8 +236,7 @@
                       (and (seq? x)
                            (not (string? x))
                            (if (vector? x)
-                             (let [head (aget x 0)]
-                               (not (or (keyword? head) (fn? head))))
+                             (not (keyword? (aget x 0)))
                              true))))
      :default (seq? x)))
 
