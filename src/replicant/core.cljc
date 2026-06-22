@@ -212,11 +212,33 @@
         (merge-attrs (:replicant/unmounting (nth (vdom/sexp vdom) 1)))
         (prep-attrs nil (vdom/classes vdom)))))
 
+;; Under squint a seq of a vector is the vector itself, so a flattenable child
+;; seq cannot be told from a child vector. Such a seq is tagged with this marker
+;; and proper-seq? honors it.
+(def ^:no-doc seq-tag #?(:squint (js/Symbol "replicant.core/seq") :default nil))
+
+(defn ^:no-doc ->seq
+  "Tag a built child collection as a flattenable seq. nil when empty, matching
+  clojure.core/seq."
+  [xs]
+  #?(:squint (when (seq xs) (aset xs seq-tag true) xs)
+     :default (seq xs)))
+
 (defn ^:no-doc proper-seq?
   "Like clojure.core/seq?. In squint vectors and strings are seq?, so narrow to
-  genuine sequences."
+  genuine sequences or marked child seqs. A vector whose head is not a tag
+  (keyword or fn) is a sequence of nodes, not a hiccup node, so it is treated as
+  a seq. This catches user-built seqs such as (rest some-vector), which squint
+  returns as a vector."
   [x]
-  #?(:squint (and (seq? x) (not (vector? x)) (not (string? x)))
+  #?(:squint (and x
+                  (or (aget x seq-tag)
+                      (and (seq? x)
+                           (not (string? x))
+                           (if (vector? x)
+                             (let [head (aget x 0)]
+                               (not (or (keyword? head) (fn? head))))
+                             true))))
      :default (seq? x)))
 
 (defn ^:private flatten-seqs* [xs coll]
@@ -349,25 +371,11 @@
            (ifn? *dispatch*)
            (assoc :replicant/dispatch *dispatch*))))))
 
-;; unmount-hooks is keyed by DOM node. squint maps coerce keys to strings, so a
-;; js Map is used for identity keys. It is mutated in place and returned.
-(defn ^:no-doc nm-new []
+;; unmount-hooks is keyed by DOM node. squint maps coerce object keys to
+;; strings, so a js Map is used for identity keys. squint's assoc/dissoc/into
+;; copy a Map, so the standard immutable map fns work on it unchanged.
+(defn ^:no-doc node-map []
   #?(:squint (js/Map.) :default {}))
-
-(defn ^:no-doc nm-get [m k]
-  #?(:squint (.get m k) :default (get m k)))
-
-(defn ^:no-doc nm-dissoc [m k]
-  #?(:squint (do (.delete m k) m) :default (dissoc m k)))
-
-(defn ^:no-doc nm-into [m kvs]
-  #?(:squint (do (run! (fn [[k v]] (.set m k v)) kvs) m) :default (into m kvs)))
-
-(defn ^:no-doc nm-keys [m]
-  #?(:squint (js/Array.from (.keys m)) :default (keys m)))
-
-(defn ^:no-doc nm-dissoc-all [m ks]
-  #?(:squint (do (run! (fn [k] (.delete m k)) ks) m) :default (apply dissoc m ks)))
 
 (defn register-hooks
   "Register the life-cycle hooks from the corresponding virtual DOM node to call
@@ -384,10 +392,10 @@
                          :replicant/on-update])]
     ;; If this node previously had an unmount hook associated with it, but the
     ;; new headers don't have any hooks, remove it.
-    (when (and (nm-get @unmount-hooks node)
+    (when (and (get @unmount-hooks node)
                headers
                (empty? new-hooks))
-      (vswap! unmount-hooks nm-dissoc node))
+      (vswap! unmount-hooks dissoc node))
     (when-not (empty? new-hooks)
       (let [headers-sexp (some-> headers hiccup/sexp)
             vdom-sexp (some-> vdom vdom/sexp)
@@ -396,11 +404,13 @@
                            new-hooks)]
         (when-let [new-unmount-hooks
                    (->> new-hooks
-                        (filterv (comp #{:replicant/on-render
-                                         :replicant/on-unmount} second))
+                        ;; squint sets are not callable, so test membership
+                        ;; with contains? instead of using the set as a fn
+                        (filterv #(contains? #{:replicant/on-render
+                                               :replicant/on-unmount} (second %)))
                         (mapv (fn [[_ _ node :as hook]]
                                 [node (conj hook :replicant.life-cycle/unmount)])))]
-          (vswap! unmount-hooks nm-into new-unmount-hooks))
+          (vswap! unmount-hooks into new-unmount-hooks))
         (vswap! hooks into new-hooks)))))
 
 (defn register-mount [{:keys [mounts]} node mounting-attrs attrs]
@@ -573,7 +583,7 @@
                     (or (seq classes)
                         (:class attrs)) (update :class add-classes classes)
                     alias-data (assoc :replicant/alias-data alias-data))
-            children (seq (flatten-seqs (hiccup/children headers)))]
+            children (->seq (flatten-seqs (hiccup/children headers)))]
         (asserts/assert-alias-exists tag-name (get aliases tag-name) (keys aliases))
         (errors/with-error-handling "rendering alias" (hiccup/sexp headers)
           (let [alias-hiccup (f attrs children)]
@@ -983,7 +993,7 @@
         ;;
         ;; `potential-unmounts` is a map of {dom-node hook} for any node that
         ;; has ever had a hook registered.
-        unmounted-nodes (->> (nm-keys potential-unmounts)
+        unmounted-nodes (->> (keys potential-unmounts)
                              ;; We're only interested in DOM nodes that have
                              ;; been removed from the DOM
                              (remove #(r/attached? renderer %))
@@ -991,9 +1001,9 @@
                              ;; hooks for
                              (remove (let [planned (set (mapv (fn [[_ _ node]] node) hooks-to-call))]
                                        #(contains? planned %))))]
-    (when unmounted-nodes
+    (when (seq unmounted-nodes)
       ;; If we found any of these, we'll forget about them for the next render
-      (vswap! unmount-hooks nm-dissoc-all unmounted-nodes))
+      (vswap! unmount-hooks #(apply dissoc % unmounted-nodes)))
     (into hooks-to-call
           ;; ...and we'll call include the hooks to be called now
           (vals (select-keys potential-unmounts unmounted-nodes)))))
@@ -1007,7 +1017,7 @@
   (let [impl {:renderer renderer
               :hooks (volatile! [])
               :mounts (volatile! [])
-              :unmount-hooks (or unmount-hooks (volatile! (nm-new)))
+              :unmount-hooks (or unmount-hooks (volatile! (node-map)))
               :unmounts (or unmounts (volatile! #{}))
               :aliases aliases
               :alias-data alias-data

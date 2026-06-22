@@ -61,7 +61,9 @@
                 (nil? (namespace k)))
        (let [v (cond-> v
                  (keyword? v)
-                 name)]
+                 ;; squint keywords are strings, so keyword? is true for plain
+                 ;; string values too; str avoids name stripping a slash (URLs)
+                 #?(:squint str :default name))]
          (append stringifier " ")
          (case k
            :classes

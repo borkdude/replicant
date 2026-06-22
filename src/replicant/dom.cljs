@@ -203,7 +203,7 @@
       (set! (.-innerHTML el) "")
       (vswap! state assoc el {:renderer (create-renderer)
                               :unmounts (volatile! #{})
-                              :unmount-hooks (volatile! (r/nm-new))
+                              :unmount-hooks (volatile! (r/node-map))
                               :rendering? true}))
     (if rendering?
       (do
