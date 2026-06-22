@@ -15,9 +15,10 @@
 
 (defn -insert-before [children child reference]
   (let [idx (.indexOf children reference)]
-    (concat (remove #{child} (take idx children))
-            [child]
-            (remove #{child} (drop idx children)))))
+    ;; vec so :children stays a JS array for the next .indexOf under squint
+    (vec (concat (remove #{child} (take idx children))
+                 [child]
+                 (remove #{child} (drop idx children))))))
 
 (defn replace-by [xs f new replace]
   (let [replace-v (f replace)]

@@ -143,7 +143,7 @@
                  :aliases aliases
                  :alias-data alias-data})))
            (r/get-children headers (hiccup/html-ns headers))))
-        (when-not (self-closing? tag-name)
+        (when-not (contains? self-closing? tag-name)
           (doto stringifier
             (append indent-s)
             (append "</")
@@ -166,7 +166,7 @@
         (render-node stringifier (r/get-hiccup-headers nil hiccup) opt)
         (to-string stringifier))
 
-      (seq? hiccup)
+      (r/proper-seq? hiccup)
       (let [stringifier (create-renderer)]
         (doseq [hiccup-node hiccup]
           (render-node stringifier (r/get-hiccup-headers nil hiccup-node) opt))

@@ -167,7 +167,7 @@
 (defn get-style-val [attr v]
   (cond
     (number? v)
-    (if (skip-pixelize-attrs attr)
+    (if (contains? skip-pixelize-attrs attr)
       (str v)
       (str v "px"))
 
@@ -212,10 +212,17 @@
         (merge-attrs (:replicant/unmounting (nth (vdom/sexp vdom) 1)))
         (prep-attrs nil (vdom/classes vdom)))))
 
+(defn ^:no-doc proper-seq?
+  "Like clojure.core/seq?. In squint vectors and strings are seq?, so narrow to
+  genuine sequences."
+  [x]
+  #?(:squint (and (seq? x) (not (vector? x)) (not (string? x)))
+     :default (seq? x)))
+
 (defn ^:private flatten-seqs* [xs coll]
   (reduce
    (fn [_ x]
-     (cond (seq? x) (flatten-seqs* x coll)
+     (cond (proper-seq? x) (flatten-seqs* x coll)
            :else (conj! coll x)))
    nil xs))
 
@@ -227,7 +234,7 @@
 (defn ^:private flatten-map-seqs* [f xs coll]
   (reduce
    (fn [_ x]
-     (cond (seq? x) (flatten-map-seqs* f x coll)
+     (cond (proper-seq? x) (flatten-map-seqs* f x coll)
            :else (conj! coll (f x))))
    nil xs))
 
@@ -342,6 +349,26 @@
            (ifn? *dispatch*)
            (assoc :replicant/dispatch *dispatch*))))))
 
+;; unmount-hooks is keyed by DOM node. squint maps coerce keys to strings, so a
+;; js Map is used for identity keys. It is mutated in place and returned.
+(defn ^:no-doc nm-new []
+  #?(:squint (js/Map.) :default {}))
+
+(defn ^:no-doc nm-get [m k]
+  #?(:squint (.get m k) :default (get m k)))
+
+(defn ^:no-doc nm-dissoc [m k]
+  #?(:squint (do (.delete m k) m) :default (dissoc m k)))
+
+(defn ^:no-doc nm-into [m kvs]
+  #?(:squint (do (run! (fn [[k v]] (.set m k v)) kvs) m) :default (into m kvs)))
+
+(defn ^:no-doc nm-keys [m]
+  #?(:squint (js/Array.from (.keys m)) :default (keys m)))
+
+(defn ^:no-doc nm-dissoc-all [m ks]
+  #?(:squint (do (run! (fn [k] (.delete m k)) ks) m) :default (apply dissoc m ks)))
+
 (defn register-hooks
   "Register the life-cycle hooks from the corresponding virtual DOM node to call
   in `impl`, if any. `details` is a vector of keywords that provide some detail
@@ -349,7 +376,7 @@
   [{:keys [hooks unmount-hooks]} node headers & [vdom details]]
   (let [target (if headers (hiccup/attrs headers) (vdom/attrs vdom))
         new-hooks (keep (fn [life-cycle-key]
-                          (when-let [hook (life-cycle-key target)]
+                          (when-let [hook (get target life-cycle-key)]
                             [life-cycle-key hook]))
                         [:replicant/on-render
                          :replicant/on-mount
@@ -357,10 +384,10 @@
                          :replicant/on-update])]
     ;; If this node previously had an unmount hook associated with it, but the
     ;; new headers don't have any hooks, remove it.
-    (when (and (get @unmount-hooks node)
+    (when (and (nm-get @unmount-hooks node)
                headers
                (empty? new-hooks))
-      (vswap! unmount-hooks dissoc node))
+      (vswap! unmount-hooks nm-dissoc node))
     (when-not (empty? new-hooks)
       (let [headers-sexp (some-> headers hiccup/sexp)
             vdom-sexp (some-> vdom vdom/sexp)
@@ -373,7 +400,7 @@
                                          :replicant/on-unmount} second))
                         (mapv (fn [[_ _ node :as hook]]
                                 [node (conj hook :replicant.life-cycle/unmount)])))]
-          (vswap! unmount-hooks into new-unmount-hooks))
+          (vswap! unmount-hooks nm-into new-unmount-hooks))
         (vswap! hooks into new-hooks)))))
 
 (defn register-mount [{:keys [mounts]} node mounting-attrs attrs]
@@ -384,7 +411,7 @@
 (defn update-styles [renderer el new-styles old-styles]
   (let [new-ks (set (remove #(nil? (get new-styles %)) (keys new-styles)))
         old-ks (set (keys old-styles))]
-    (run! #(r/remove-style renderer el %) (remove new-ks old-ks))
+    (run! #(r/remove-style renderer el %) (remove #(contains? new-ks %) old-ks))
     (run!
      #(let [new-style (get new-styles %)]
         (when (not= new-style (get old-styles %))
@@ -404,7 +431,7 @@
    (fn [res k]
      (cond-> res
        (= "replicant.event" (namespace k))
-       (assoc (name k) (k m))))
+       (assoc (name k) (get m k))))
    nil
    (keys (dissoc m
                  :replicant.event/handler
@@ -465,8 +492,8 @@
       :style (update-styles renderer el (:style new) (:style old))
       :classes (update-classes renderer el (:classes new) (:classes old))
       :on (update-event-listeners renderer el (:on new) (:on old))
-      (if-let [v (attr new)]
-        (when (not= v (attr old))
+      (if-let [v (get new attr)]
+        (when (not= v (get old attr))
           (set-attr-val renderer el attr v))
         (r/remove-attribute renderer el (name attr))))))
 
@@ -503,7 +530,7 @@
       :style (set-styles renderer el (:style new))
       :classes (set-classes renderer el (:classes new))
       :on (add-event-listeners renderer el (:on new))
-      (set-attr-val renderer el attr (attr new)))))
+      (set-attr-val renderer el attr (get new attr)))))
 
 (defn set-attributes [renderer el new-attrs]
   (run! (fn [[attr v]]
@@ -534,7 +561,9 @@
 
 (defn get-alias-headers [{:keys [aliases alias-data on-alias-exception]} headers]
   (let [tag-name (hiccup/tag-name headers)]
-    (when (keyword? tag-name)
+    ;; aliases are qualified keywords. Under squint keywords are strings, so
+    ;; keyword? would match every tag. qualified-keyword? matches aliases only.
+    (when (qualified-keyword? tag-name)
       (let [f (or (get aliases tag-name) (partial render-default-alias tag-name))
             id (hiccup/id headers)
             classes (hiccup/classes headers)
@@ -655,7 +684,7 @@
   ;; An assigned id means the node has already started unmounting
   (if-let [id (vdom/unmount-id vdom)]
     ;; If the id is in the unmounts set, it has not yet finished unmounting
-    (when (unmounts id)
+    (when (contains? unmounts id)
       vdom)
     (let [res (if-let [attrs (get-unmounting-attrs vdom)]
                 ;; The node has unmounting attributes: mark it as unmounting,
@@ -803,11 +832,11 @@
 
           ;; Old node is already on its way out from a previous render
           (and old-vdom (vdom/unmount-id old-vdom))
-          (let [[child child-vdom] (when (and new-headers (not (old-ks (hiccup/rkey new-headers))))
+          (let [[child child-vdom] (when (and new-headers (not (contains? old-ks (hiccup/rkey new-headers))))
                                      (let [res (create-node impl new-headers)]
                                        (insert-node r el (first res) n n-children)
                                        res))]
-            (if (unmounts (vdom/unmount-id old-vdom))
+            (if (contains? unmounts (vdom/unmount-id old-vdom))
               ;; Still unmounting
               (cond
                 new-nil?
@@ -848,13 +877,13 @@
             (recur (next new-c) (next old-c) (unchecked-inc-int n) move-n n-children (or changed? (not node-unchanged?)) (conj! vdom new-vdom)))
 
           ;; New node did not previously exist, create it
-          (not (old-ks (hiccup/rkey new-headers)))
+          (not (contains? old-ks (hiccup/rkey new-headers)))
           (let [[child child-vdom] (create-node impl new-headers)]
             (insert-node r el child n n-children)
             (recur (next new-c) (cond-> old-c (nil? old-vdom) next) (unchecked-inc-int n) move-n (unchecked-inc-int n-children) true (conj! vdom child-vdom)))
 
           ;; Old node no longer exists, remove it
-          (or old-nil? (not (new-ks (vdom/rkey old-vdom))))
+          (or old-nil? (not (contains? new-ks (vdom/rkey old-vdom))))
           (if old-nil?
             (recur new-c (next old-c) n move-n n-children changed? vdom)
             (if-let [unmounting-node (remove-child impl unmounts el n old-vdom)]
@@ -954,16 +983,17 @@
         ;;
         ;; `potential-unmounts` is a map of {dom-node hook} for any node that
         ;; has ever had a hook registered.
-        unmounted-nodes (->> (keys potential-unmounts)
+        unmounted-nodes (->> (nm-keys potential-unmounts)
                              ;; We're only interested in DOM nodes that have
                              ;; been removed from the DOM
                              (remove #(r/attached? renderer %))
                              ;; ...and that we're not already planning to call
                              ;; hooks for
-                             (remove (set (mapv (fn [[_ _ node]] node) hooks-to-call))))]
+                             (remove (let [planned (set (mapv (fn [[_ _ node]] node) hooks-to-call))]
+                                       #(contains? planned %))))]
     (when unmounted-nodes
       ;; If we found any of these, we'll forget about them for the next render
-      (vswap! unmount-hooks (fn [h] (apply dissoc h unmounted-nodes))))
+      (vswap! unmount-hooks nm-dissoc-all unmounted-nodes))
     (into hooks-to-call
           ;; ...and we'll call include the hooks to be called now
           (vals (select-keys potential-unmounts unmounted-nodes)))))
@@ -977,13 +1007,13 @@
   (let [impl {:renderer renderer
               :hooks (volatile! [])
               :mounts (volatile! [])
-              :unmount-hooks (or unmount-hooks (volatile! {}))
+              :unmount-hooks (or unmount-hooks (volatile! (nm-new)))
               :unmounts (or unmounts (volatile! #{}))
               :aliases aliases
               :alias-data alias-data
               :on-alias-exception on-alias-exception}
         vdom
-        (if (seq? hiccup)
+        (if (proper-seq? hiccup)
           (let [[children ks] (get-children-ks
                                (hiccup/create
                                 #?(:cljs #js [nil nil nil]

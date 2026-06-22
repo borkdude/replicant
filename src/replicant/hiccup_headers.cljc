@@ -1,6 +1,15 @@
 (ns ^:no-doc replicant.hiccup-headers
   #?(:cljs (:require-macros [replicant.hiccup-headers])))
 
+(defn ^:no-doc make-key
+  "The reuse key for a keyed node: a [tag user-key] tuple, except under squint
+  where set/map membership uses reference (not value) equality for composite
+  values - so a primitive string is used for value-based identity. The tag is
+  length-prefixed so the tag/key boundary is unambiguous for any contents."
+  [tag k]
+  #?(:squint (str (.-length tag) ":" tag k)
+     :default [tag k]))
+
 (defmacro hget [x k]
   (if (:ns &env)
     `(aget ~x ~k)
@@ -35,7 +44,7 @@
 
 (defmacro get-key [parsed-tag attrs]
   `(when-let [k# (:replicant/key ~attrs)]
-     [(hget ~parsed-tag 0) k#]))
+     (make-key (hget ~parsed-tag 0) k#)))
 
 (defmacro create [parsed-tag attrs children ns sexp]
   (if (:ns &env)
