@@ -167,7 +167,7 @@
 (defn get-style-val [attr v]
   (cond
     (number? v)
-    (if (contains? skip-pixelize-attrs attr)
+    (if (skip-pixelize-attrs attr)
       (str v)
       (str v "px"))
 

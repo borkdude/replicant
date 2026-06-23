@@ -145,7 +145,7 @@
                  :aliases aliases
                  :alias-data alias-data})))
            (r/get-children headers (hiccup/html-ns headers))))
-        (when-not (contains? self-closing? tag-name)
+        (when-not (self-closing? tag-name)
           (doto stringifier
             (append indent-s)
             (append "</")
