@@ -403,10 +403,8 @@
                            new-hooks)]
         (when-let [new-unmount-hooks
                    (->> new-hooks
-                        ;; squint sets are not callable, so test membership
-                        ;; with contains? instead of using the set as a fn
-                        (filterv #(contains? #{:replicant/on-render
-                                               :replicant/on-unmount} (second %)))
+                        (filterv (comp #{:replicant/on-render
+                                         :replicant/on-unmount} second))
                         (mapv (fn [[_ _ node :as hook]]
                                 [node (conj hook :replicant.life-cycle/unmount)])))]
           (vswap! unmount-hooks into new-unmount-hooks))
@@ -420,7 +418,7 @@
 (defn update-styles [renderer el new-styles old-styles]
   (let [new-ks (set (remove #(nil? (get new-styles %)) (keys new-styles)))
         old-ks (set (keys old-styles))]
-    (run! #(r/remove-style renderer el %) (remove #(contains? new-ks %) old-ks))
+    (run! #(r/remove-style renderer el %) (remove new-ks old-ks))
     (run!
      #(let [new-style (get new-styles %)]
         (when (not= new-style (get old-styles %))
@@ -998,8 +996,7 @@
                              (remove #(r/attached? renderer %))
                              ;; ...and that we're not already planning to call
                              ;; hooks for
-                             (remove (let [planned (set (mapv (fn [[_ _ node]] node) hooks-to-call))]
-                                       #(contains? planned %))))]
+                             (remove (set (mapv (fn [[_ _ node]] node) hooks-to-call))))]
     (when unmounted-nodes
       ;; If we found any of these, we'll forget about them for the next render
       (vswap! unmount-hooks (fn [h] (apply dissoc h unmounted-nodes))))
